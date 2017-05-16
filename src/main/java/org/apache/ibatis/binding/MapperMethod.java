@@ -1,5 +1,5 @@
 /**
- *    Copyright 2009-2016 the original author or authors.
+ *    Copyright 2009-2017 the original author or authors.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -51,33 +51,42 @@ public class MapperMethod {
 
   public Object execute(SqlSession sqlSession, Object[] args) {
     Object result;
-    if (SqlCommandType.INSERT == command.getType()) {
-      Object param = method.convertArgsToSqlCommandParam(args);
-      result = rowCountResult(sqlSession.insert(command.getName(), param));
-    } else if (SqlCommandType.UPDATE == command.getType()) {
-      Object param = method.convertArgsToSqlCommandParam(args);
-      result = rowCountResult(sqlSession.update(command.getName(), param));
-    } else if (SqlCommandType.DELETE == command.getType()) {
-      Object param = method.convertArgsToSqlCommandParam(args);
-      result = rowCountResult(sqlSession.delete(command.getName(), param));
-    } else if (SqlCommandType.SELECT == command.getType()) {
-      if (method.returnsVoid() && method.hasResultHandler()) {
-        executeWithResultHandler(sqlSession, args);
-        result = null;
-      } else if (method.returnsMany()) {
-        result = executeForMany(sqlSession, args);
-      } else if (method.returnsMap()) {
-        result = executeForMap(sqlSession, args);
-      } else if (method.returnsCursor()) {
-        result = executeForCursor(sqlSession, args);
-      } else {
-        Object param = method.convertArgsToSqlCommandParam(args);
-        result = sqlSession.selectOne(command.getName(), param);
+    switch (command.getType()) {
+      case INSERT: {
+    	Object param = method.convertArgsToSqlCommandParam(args);
+        result = rowCountResult(sqlSession.insert(command.getName(), param));
+        break;
       }
-    } else if (SqlCommandType.FLUSH == command.getType()) {
+      case UPDATE: {
+        Object param = method.convertArgsToSqlCommandParam(args);
+        result = rowCountResult(sqlSession.update(command.getName(), param));
+        break;
+      }
+      case DELETE: {
+        Object param = method.convertArgsToSqlCommandParam(args);
+        result = rowCountResult(sqlSession.delete(command.getName(), param));
+        break;
+      }
+      case SELECT:
+        if (method.returnsVoid() && method.hasResultHandler()) {
+          executeWithResultHandler(sqlSession, args);
+          result = null;
+        } else if (method.returnsMany()) {
+          result = executeForMany(sqlSession, args);
+        } else if (method.returnsMap()) {
+          result = executeForMap(sqlSession, args);
+        } else if (method.returnsCursor()) {
+          result = executeForCursor(sqlSession, args);
+        } else {
+          Object param = method.convertArgsToSqlCommandParam(args);
+          result = sqlSession.selectOne(command.getName(), param);
+        }
+        break;
+      case FLUSH:
         result = sqlSession.flushStatements();
-    } else {
-      throw new BindingException("Unknown execution method for: " + command.getName());
+        break;
+      default:
+        throw new BindingException("Unknown execution method for: " + command.getName());
     }
     if (result == null && method.getReturnType().isPrimitive() && !method.returnsVoid()) {
       throw new BindingException("Mapper method '" + command.getName() 
@@ -158,10 +167,17 @@ public class MapperMethod {
   }
 
   @SuppressWarnings("unchecked")
-  private <E> E[] convertToArray(List<E> list) {
-    E[] array = (E[]) Array.newInstance(method.getReturnType().getComponentType(), list.size());
-    array = list.toArray(array);
-    return array;
+  private <E> Object convertToArray(List<E> list) {
+    Class<?> arrayComponentType = method.getReturnType().getComponentType();
+    Object array = Array.newInstance(arrayComponentType, list.size());
+    if (arrayComponentType.isPrimitive()) {
+      for (int i = 0; i < list.size(); i++) {
+        Array.set(array, i, list.get(i));
+      }
+      return array;
+    } else {
+      return list.toArray((E[])array);
+    }
   }
 
   private <K, V> Map<K, V> executeForMap(SqlSession sqlSession, Object[] args) {
@@ -196,22 +212,17 @@ public class MapperMethod {
     private final SqlCommandType type;
 
     public SqlCommand(Configuration configuration, Class<?> mapperInterface, Method method) {
-      String statementName = mapperInterface.getName() + "." + method.getName();
-      MappedStatement ms = null;
-      if (configuration.hasStatement(statementName)) {
-        ms = configuration.getMappedStatement(statementName);
-      } else if (!mapperInterface.equals(method.getDeclaringClass())) { // issue #35
-        String parentStatementName = method.getDeclaringClass().getName() + "." + method.getName();
-        if (configuration.hasStatement(parentStatementName)) {
-          ms = configuration.getMappedStatement(parentStatementName);
-        }
-      }
+      final String methodName = method.getName();
+      final Class<?> declaringClass = method.getDeclaringClass();
+      MappedStatement ms = resolveMappedStatement(mapperInterface, methodName, declaringClass,
+          configuration);
       if (ms == null) {
-        if(method.getAnnotation(Flush.class) != null){
+        if (method.getAnnotation(Flush.class) != null) {
           name = null;
           type = SqlCommandType.FLUSH;
         } else {
-          throw new BindingException("Invalid bound statement (not found): " + statementName);
+          throw new BindingException("Invalid bound statement (not found): "
+              + mapperInterface.getName() + "." + methodName);
         }
       } else {
         name = ms.getId();
@@ -228,6 +239,26 @@ public class MapperMethod {
 
     public SqlCommandType getType() {
       return type;
+    }
+
+    private MappedStatement resolveMappedStatement(Class<?> mapperInterface, String methodName,
+        Class<?> declaringClass, Configuration configuration) {
+      String statementId = mapperInterface.getName() + "." + methodName;
+      if (configuration.hasStatement(statementId)) {
+        return configuration.getMappedStatement(statementId);
+      } else if (mapperInterface.equals(declaringClass)) {
+        return null;
+      }
+      for (Class<?> superInterface : mapperInterface.getInterfaces()) {
+        if (declaringClass.isAssignableFrom(superInterface)) {
+          MappedStatement ms = resolveMappedStatement(superInterface, methodName,
+              declaringClass, configuration);
+          if (ms != null) {
+            return ms;
+          }
+        }
+      }
+      return null;
     }
   }
 

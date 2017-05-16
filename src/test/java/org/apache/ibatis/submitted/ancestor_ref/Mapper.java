@@ -19,5 +19,6 @@ public interface Mapper {
 
   User getUserAssociation(Integer id);
   User getUserCollection(Integer id);
+  Blog selectBlog(Integer id);
 
 }
